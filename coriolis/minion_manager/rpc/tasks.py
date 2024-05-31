@@ -245,7 +245,7 @@ class _BaseConfirmMinionAllocationForActionTask(
     def _confirm_machine_allocation_for_action(
             self, context, action_id, machine_allocations):
         raise NotImplementedError(
-            "No minion allocation confrimation operation defined")
+            "No minion allocation confirmation operation defined")
 
     def execute(self, context):
         machines_cache = {}
@@ -293,7 +293,7 @@ class _BaseConfirmMinionAllocationForActionTask(
                 "connection_info": minion_machine.connection_info}
             if not all(required_props.values()):
                 raise exception.InvalidMinionMachineState(
-                    "One or more required paroperties for minion machine '%s' "
+                    "One or more required properties for minion machine '%s' "
                     "(to be used as a '%s' minion for instance '%s' of action "
                     "'%s') were missing: %s" % (
                         minion_machine.id, minion_purpose, instance,
