@@ -12,6 +12,10 @@ from coriolis.taskflow import base
 from coriolis.tests import test_base
 
 
+class CoriolisTestException(Exception):
+    pass
+
+
 class MinionManagerTaskEventMixinTestCase(test_base.CoriolisBaseTestCase):
     """Test suite for the Coriolis MinionManagerTaskEventMixin class."""
 
@@ -883,3 +887,336 @@ class AllocateSharedPoolResourcesTaskTestCase(test_base.CoriolisBaseTestCase):
         mock_add_minion_pool_event.assert_not_called()
         mock_execute.assert_not_called()
         mock_update_minion_pool.assert_not_called()
+
+    @mock.patch.object(tasks.BaseMinionManangerTask, 'revert')
+    @mock.patch.object(tasks.minion_manager_utils, 'get_minion_pool_lock')
+    @mock.patch.object(tasks.db_api, 'update_minion_pool')
+    def test_revert(self, mock_update_minion_pool, mock_get_minion_pool_lock,
+                    mock_revert):
+        self.task_info = {}
+        self.update_values = {
+            'pool_shared_resources': None
+        }
+        with self.assertLogs('coriolis.minion_manager.rpc.tasks',
+                             level=logging.DEBUG):
+            result = self.task.revert(
+                mock.sentinel.context, mock.sentinel.origin,
+                mock.sentinel.destination, self.task_info)
+            self.assertIsNone(result)
+
+        mock_revert.assert_called_once_with(
+            mock.sentinel.context, mock.sentinel.origin,
+            mock.sentinel.destination, self.task_info
+        )
+
+        mock_get_minion_pool_lock.assert_called_once_with(
+            self.minion_pool_id, external=True)
+
+        mock_update_minion_pool.assert_called_once_with(
+            mock.sentinel.context, self.minion_pool_id, self.update_values)
+
+
+class DeallocateSharedPoolResourcesTaskTestCase(
+    test_base.CoriolisBaseTestCase):
+    """Test suite for the Coriolis DeallocateSharedPoolResourcesTask class."""
+
+    def setUp(self):
+        super(DeallocateSharedPoolResourcesTaskTestCase, self).setUp()
+        self.minion_pool_id = 'test_pool_id'
+        self.task_info = {
+            'pool_shared_resources': True,
+            'pool_environment_options': 'test_options'
+        }
+
+        self.task = tasks.DeallocateSharedPoolResourcesTask(
+            self.minion_pool_id, mock.sentinel.minion_machine_id,
+            mock.sentinel.minion_pool_type)
+
+    def test__get_task_name(self):
+        result = self.task._get_task_name(
+            self.minion_pool_id, mock.sentinel.minion_machine_id)
+
+        self.assertEqual(
+            result,
+            tasks.MINION_POOL_DEALLOCATE_SHARED_RESOURCES_TASK_NAME_FORMAT %
+            (self.minion_pool_id)
+        )
+
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_add_minion_pool_event'
+    )
+    @mock.patch.object(tasks.db_api, 'update_minion_pool')
+    @mock.patch.object(tasks.BaseMinionManangerTask, 'execute')
+    def test_execute(self, mock_execute, mock_update_minion_pool,
+                     mock_add_minion_pool_event):
+        self.update_values = {
+            'shared_resources': None,
+        }
+        with self.assertLogs('coriolis.minion_manager.rpc.tasks',
+                             level=logging.WARN):
+                result = self.task.execute(
+                    mock.sentinel.context, mock.sentinel.origin,
+                    mock.sentinel.destination, self.task_info)
+                self.assertEqual(result, self.task_info)
+        mock_add_minion_pool_event.assert_has_calls([
+            mock.call(
+                mock.sentinel.context, "Deallocating shared pool resources"),
+            mock.call(
+                mock.sentinel.context,
+                "Successfully deallocated shared pool resources")
+        ])
+        mock_execute.assert_called_once_with(
+            mock.sentinel.context, mock.sentinel.origin,
+            mock.sentinel.destination, self.task_info)
+        mock_update_minion_pool.assert_called_once_with(
+            mock.sentinel.context, self.minion_pool_id, self.update_values)
+
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_add_minion_pool_event'
+    )
+    @mock.patch.object(tasks.db_api, 'update_minion_pool')
+    @mock.patch.object(tasks.BaseMinionManangerTask, 'execute')
+    def test_execute_no_shared_resources(self, mock_execute,
+                                         mock_update_minion_pool,
+                                         mock_add_minion_pool_event):
+        self.task_info = {}
+        self.assertRaises(
+            exception.InvalidInput, self.task.execute,
+            mock.sentinel.context, mock.sentinel.origin,
+            mock.sentinel.destination, self.task_info)
+
+        mock_add_minion_pool_event.assert_called_once_with(
+            mock.sentinel.context,
+            "Deallocating shared pool resources"
+        )
+        mock_execute.assert_not_called()
+        mock_update_minion_pool.assert_not_called()
+
+
+class AllocateMinionMachineTaskTestCase(test_base.CoriolisBaseTestCase):
+    """Test suite for the Coriolis AllocateMinionMachineTask class."""
+
+    def setUp(self):
+        super(AllocateMinionMachineTaskTestCase, self).setUp()
+        self.minion_machine = mock.MagicMock()
+        self.minion_machine.id = 'test_machine_id'
+        self.minion_machine.pool_id = 'test_pool_id'
+        self.minion_machine.allocation_status = (
+            tasks.constants.MINION_MACHINE_STATUS_UNINITIALIZED)
+        self.minion_machine.allocated_action = mock.sentinel.allocation_action
+        self.minion_pool_id = 'test_pool_id'
+        self.minion_machine_id = 'test_machine_id'
+        self.task_info = {
+            'pool_environment_options': 'test_options',
+            'pool_shared_resources': True,
+            'pool_identifier': 'test_pool_id',
+            'pool_os_type': 'linux',
+        }
+
+        self.task = tasks.AllocateMinionMachineTask(
+            self.minion_pool_id, self.minion_machine_id,
+            mock.sentinel.minion_pool_type)
+
+        self.task._allocate_to_action = self.minion_machine.allocated_action
+
+    def test__get_task_name(self):
+        result = self.task._get_task_name(
+            self.minion_pool_id, self.minion_machine_id)
+
+        self.assertEqual(
+            result,
+            tasks.MINION_POOL_ALLOCATE_MACHINE_TASK_NAME_FORMAT %
+            (self.minion_pool_id, self.minion_machine_id)
+        )
+
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_get_minion_machine'
+    )
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_update_minion_machine'
+    )
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_add_minion_pool_event'
+    )
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin,
+        '_set_minion_machine_allocation_status'
+    )
+    @mock.patch.object(tasks.timeutils, 'utcnow')
+    @mock.patch.object(tasks.models, 'MinionMachine')
+    @mock.patch.object(tasks.db_api, 'add_minion_machine')
+    @mock.patch.object(tasks.BaseMinionManangerTask, 'execute')
+    def test_execute(self, mock_execute, mock_add_minion_machine,
+                     mock_minion_machine, mock_utcnow,
+                     mock_set_minion_machine_allocation,
+                     mock_add_minion_pool_event, mock_update_minion_machine,
+                     mock_get_minion_machine):
+        mock_get_minion_machine.return_value = self.minion_machine
+        mock_execute.return_value = {
+            'minion_connection_info': 'test_connection_info',
+            'minion_provider_properties': 'test_provider_properties',
+            'minion_backup_writer_connection_info': (
+                'test_backup_writer_connection_info'),
+        }
+        expected_updated_values = {
+            'last_used_at': mock_utcnow.return_value,
+            'allocation_status': (
+                tasks.constants.MINION_MACHINE_STATUS_IN_USE),
+            'power_status': (
+                tasks.constants.MINION_MACHINE_POWER_STATUS_POWERED_ON),
+            'connection_info': 'test_connection_info',
+            'provider_properties': 'test_provider_properties',
+            'backup_writer_connection_info': (
+                'test_backup_writer_connection_info'),
+            'allocated_action': self.task._allocate_to_action
+        }
+        with self.assertLogs('coriolis.minion_manager.rpc.tasks',
+                             level=logging.INFO):
+            result = self.task.execute(
+                mock.sentinel.context, mock.sentinel.origin,
+                mock.sentinel.destination, self.task_info)
+            self.assertEqual(result, self.task_info)
+
+        mock_get_minion_machine.assert_called_once_with(
+            mock.sentinel.context, self.minion_machine_id,
+            raise_if_not_found=False)
+        mock_set_minion_machine_allocation.assert_called_once_with(
+            mock.sentinel.context, self.minion_pool_id, self.minion_machine_id,
+            tasks.constants.MINION_MACHINE_STATUS_ALLOCATING)
+        mock_minion_machine.assert_not_called()
+        mock_add_minion_machine.assert_not_called()
+        mock_add_minion_pool_event.assert_has_calls([
+            mock.call(
+                mock.sentinel.context,
+                f"Allocating minion machine with internal pool ID "
+                f"'{self.minion_machine_id}' to be used for transfer "
+                f"action with ID '{self.task._allocate_to_action}'"),
+            mock.call(
+                mock.sentinel.context,
+                f"Successfully allocated minion machine with internal pool "
+                f"ID '{self.minion_machine_id}'")
+        ])
+        mock_execute.assert_called_once_with(
+            mock.sentinel.context, mock.sentinel.origin,
+            mock.sentinel.destination, self.task_info)
+        mock_update_minion_machine.assert_called_once_with(
+            mock.sentinel.context, self.minion_pool_id, self.minion_machine_id,
+            expected_updated_values)
+
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_get_minion_machine'
+    )
+    def test_execute_when_allocation_status_is_not_uninitialized(
+            self, mock_get_minion_machine):
+        mock_get_minion_machine.return_value = self.minion_machine
+        self.minion_machine.allocation_status = 'ALLOCATING'
+        self.assertRaises(
+            exception.InvalidMinionMachineState, self.task.execute,
+            mock.sentinel.context, mock.sentinel.origin,
+            mock.sentinel.destination, self.task_info)
+
+        mock_get_minion_machine.assert_called_once_with(
+            mock.sentinel.context, self.minion_machine_id,
+            raise_if_not_found=False)
+
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_get_minion_machine'
+    )
+    def test_execute_when_minion_machine_belongs_to_different_pool(
+            self, mock_get_minion_machine):
+        mock_get_minion_machine.return_value = self.minion_machine
+        self.minion_machine.pool_id = 'DIFFERENT_POOL_ID'
+
+        self.assertRaises(
+            exception.InvalidMinionMachineState, self.task.execute,
+            mock.sentinel.context, mock.sentinel.origin,
+            mock.sentinel.destination, self.task_info)
+
+        mock_get_minion_machine.assert_called_once_with(
+            mock.sentinel.context, self.minion_machine_id,
+            raise_if_not_found=False)
+
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_get_minion_machine'
+    )
+    def test_execute_when_minion_machine_already_allocated(
+            self, mock_get_minion_machine):
+        mock_get_minion_machine.return_value = self.minion_machine
+        self.task._allocate_to_action = 'ANOTHER_ACTION'
+
+        self.assertRaises(
+            exception.InvalidMinionMachineState, self.task.execute,
+            mock.sentinel.context, mock.sentinel.origin,
+            mock.sentinel.destination, self.task_info)
+
+        mock_get_minion_machine.assert_called_once_with(
+            mock.sentinel.context, self.minion_machine_id,
+            raise_if_not_found=False)
+
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_get_minion_machine'
+    )
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_update_minion_machine'
+    )
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin, '_add_minion_pool_event'
+    )
+    @mock.patch.object(
+        tasks.MinionManagerTaskEventMixin,
+        '_set_minion_machine_allocation_status'
+    )
+    @mock.patch.object(tasks.models, 'MinionMachine')
+    @mock.patch.object(tasks.db_api, 'add_minion_machine')
+    @mock.patch.object(tasks.BaseMinionManangerTask, 'execute')
+    def test_execute_no_minion_machine(
+            self, mock_execute, mock_add_minion_machine, mock_minion_machine,
+            mock_set_minion_machine_allocation, mock_add_minion_pool_event,
+            mock_update_minion_machine, mock_get_minion_machine):
+        mock_get_minion_machine.return_value = None
+        mock_minion_machine.return_value = self.minion_machine
+        mock_execute.side_effect = CoriolisTestException
+
+        self.assertRaises(CoriolisTestException, self.task.execute,
+                          mock.sentinel.context, mock.sentinel.origin,
+                          mock.sentinel.destination, self.task_info)
+
+        mock_get_minion_machine.assert_called_once_with(
+            mock.sentinel.context, self.minion_machine_id,
+            raise_if_not_found=False)
+        mock_minion_machine.assert_called_once_with()
+        mock_add_minion_machine.assert_called_once_with(
+            mock.sentinel.context, self.minion_machine)
+        mock_set_minion_machine_allocation.assert_called_once_with(
+            mock.sentinel.context, self.minion_pool_id, self.minion_machine_id,
+            tasks.constants.MINION_MACHINE_STATUS_ERROR_DEPLOYING)
+        mock_add_minion_pool_event.assert_called_once_with(
+            mock.sentinel.context,
+            f"Allocating minion machine with internal pool ID "
+            f"'{self.minion_machine_id}' to be used for transfer "
+            f"action with ID '{self.task._allocate_to_action}'",
+        )
+        mock_update_minion_machine.assert_not_called()
+
+    @mock.patch.object(tasks.minion_manager_utils, 'get_minion_pool_lock')
+    @mock.patch.object(tasks.db_api, 'get_minion_machine')
+    @mock.patch.object(tasks.db_api, 'delete_minion_machine')
+    @mock.patch.object(tasks.BaseMinionManangerTask, 'revert')
+    def test_revert(self, mock_revert, mock_delete_minion_machine,
+                    mock_get_minion_machine, mock_get_minion_pool_lock):
+        self.task_info['minion_provider_properties'] = (
+            mock_get_minion_machine.return_value.provider_properties)
+        mock_get_minion_machine.return_value = self.minion_machine
+        self.task.revert(mock.sentinel.context, mock.sentinel.origin,
+                         mock.sentinel.destination, self.task_info)
+
+        mock_get_minion_machine.assert_called_once_with(
+            mock.sentinel.context, self.minion_machine_id)
+        mock_get_minion_pool_lock.assert_called_once_with(
+            self.minion_pool_id, external=True)
+        mock_delete_minion_machine.assert_called_once_with(
+            mock.sentinel.context, self.minion_machine_id)
+        mock_revert.assert_called_once_with(
+            mock.sentinel.context, mock.sentinel.origin,
+            mock.sentinel.destination, self.task_info
+        )
