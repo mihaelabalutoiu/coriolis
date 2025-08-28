@@ -26,7 +26,7 @@ class DeploymentsController(api_wsgi.Controller):
         context = req.environ["coriolis.context"]
         context.can(deployment_policies.get_deployments_policy_label("show"))
         include_task_info = api_utils.get_bool_url_arg(
-            req, "include_task_info", False)        
+            req, "include_task_info", False)
         deployment = self._deployment_api.get_deployment(
             context, id,
             include_task_info=include_task_info)
