@@ -34,10 +34,12 @@ LOG = logging.getLogger(__name__)
 
 SUPPORTED_CONTENT_TYPES = (
     'application/json',
+    'text/csv',
 )
 
 _MEDIA_TYPE_MAP = {
     'application/json': 'json',
+    'text/csv': 'csv',
 }
 
 
@@ -426,6 +428,16 @@ class JSONDictSerializer(DictSerializer):
         return jsonutils.dumps(data)
 
 
+class CSVSerializer(DictSerializer):
+    """Serializer for CSV responses. Expects pre-formatted CSV string."""
+
+    def default(self, data):
+        if isinstance(data, str):
+            return data
+        else:
+            return str(data)
+
+
 def serializers(**serializers):
     """Attaches serializers to a method.
 
@@ -693,7 +705,8 @@ class Resource(Application):
         default_deserializers.update(deserializers)
 
         self.default_deserializers = default_deserializers
-        self.default_serializers = dict(json=JSONDictSerializer)
+        self.default_serializers = dict(json=JSONDictSerializer,
+                                        csv=CSVSerializer)
 
         self.action_peek = dict(json=action_peek_json)
         self.action_peek.update(action_peek or {})
@@ -921,6 +934,11 @@ class Resource(Application):
                     action_result = self.dispatch(meth, request, action_args)
             except Fault as ex:
                 response = ex
+
+            # Allow the controller to override content-type negotiation
+            # (e.g. for CSV downloads) by updating coriolis.best_content_type
+            # in the request environ before returning.
+            accept = request.environ.get('coriolis.best_content_type', accept)
 
         if not response:
             # No exceptions; convert action_result into a

@@ -1,8 +1,6 @@
 # Copyright 2026 Cloudbase Solutions Srl
 # All Rights Reserved.
 
-import webob
-
 from coriolis.api import wsgi as api_wsgi
 from coriolis.endpoint_resources import api
 from coriolis.policies import endpoints as endpoint_policies
@@ -34,14 +32,11 @@ class EndpointInventoryController(api_wsgi.Controller):
         csv_content = self._endpoint_resources_api.get_endpoint_inventory_csv(
             context, endpoint_id, env)
 
-        response = webob.Response()
-        response.status_int = 200
-        response.content_type = 'text/csv'
-        response.charset = 'utf-8'
-        response.headers['Content-Disposition'] = (
+        req.environ['coriolis.best_content_type'] = 'text/csv'
+        resp = api_wsgi.ResponseObject(csv_content)
+        resp['content-disposition'] = (
             'attachment; filename="vm_inventory_%s.csv"' % endpoint_id)
-        response.body = csv_content.encode('utf-8')
-        return response
+        return resp
 
 
 def create_resource():
