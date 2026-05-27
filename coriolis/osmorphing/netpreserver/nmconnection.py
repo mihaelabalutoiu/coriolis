@@ -18,19 +18,42 @@ class NmconnectionNetPreserver(base.BaseNetPreserver):
         self.nmconnection_file = "etc/NetworkManager/system-connections"
 
     def check_net_preserver(self):
-        if self.osmorphing_tool._test_path(self.nmconnection_file):
-            nmconnection_files = self._get_nmconnection_files(
-                self.nmconnection_file)
-            if nmconnection_files:
-                nmconnection_ethernet = self._get_keyfiles_by_type(
-                    "ethernet", self.nmconnection_file)
-                if nmconnection_ethernet:
-                    return True
-        return False
+        if not self.get_nmconnection_files():
+            return False
+        return bool(self._get_keyfiles_by_type(
+            "ethernet", self.nmconnection_file))
+
+    def get_nmconnection_files(self):
+        if not self.osmorphing_tool._test_path(self.nmconnection_file):
+            return []
+        return self._get_nmconnection_files(self.nmconnection_file)
+
+    def get_ethernet_keyfiles(self):
+        if not self.osmorphing_tool._test_path(self.nmconnection_file):
+            return []
+        return self._get_keyfiles_by_type(
+            "ethernet", self.nmconnection_file)
+
+    def backup_ethernet_keyfiles(self, backup_file_suffix=".bak"):
+        """Back up existing ethernet nmconnection profiles."""
+        for cfg_path, _ in self.get_ethernet_keyfiles():
+            self.osmorphing_tool._exec_cmd_chroot(
+                'mv "%s" "%s%s"' % (
+                    cfg_path, cfg_path, backup_file_suffix))
+            LOG.debug(
+                "Backed up ethernet nmconnection profile '%s'", cfg_path)
+
+    def backup_nmconnection_files(self, backup_file_suffix=".bak"):
+        """Back up all existing nmconnection profiles."""
+        for cfg_path in self.get_nmconnection_files():
+            self.osmorphing_tool._exec_cmd_chroot(
+                'mv "%s" "%s%s"' % (
+                    cfg_path, cfg_path, backup_file_suffix))
+            LOG.debug(
+                "Backed up nmconnection profile '%s'", cfg_path)
 
     def parse_network(self):
-        nmconnection_ethernet = self._get_keyfiles_by_type(
-            "ethernet", self.nmconnection_file)
+        nmconnection_ethernet = self.get_ethernet_keyfiles()
         if nmconnection_ethernet:
             for nmconn_file, nmconn in nmconnection_ethernet:
                 name = nmconn.get("interface-name", nmconn.get("id"))

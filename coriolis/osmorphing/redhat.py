@@ -9,6 +9,8 @@ from oslo_log import log as logging
 
 from coriolis import exception
 from coriolis.osmorphing import base
+from coriolis.osmorphing.netpreserver import ifcfg
+from coriolis.osmorphing.netpreserver import nmconnection
 from coriolis.osmorphing.osdetect import centos as centos_detect
 from coriolis.osmorphing.osdetect import redhat as redhat_detect
 from coriolis import utils
@@ -35,12 +37,31 @@ IPV6_FAILURE_FATAL=no
 NAME=%(device_name)s
 DEVICE=%(device_name)s
 ONBOOT=yes
-NM_CONTROLLED=no
+NM_CONTROLLED=%(nm_controlled)s
+"""
+
+NMCONNECTION_TEMPLATE = """[connection]
+id=%(device_name)s
+uuid=%(connection_uuid)s
+type=ethernet
+interface-name=%(device_name)s
+autoconnect=true
+
+[ethernet]
+
+[ipv4]
+method=auto
+may-fail=false
+
+[ipv6]
+method=auto
+addr-gen-mode=default
 """
 
 
 class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
     _NETWORK_SCRIPTS_PATH = "etc/sysconfig/network-scripts"
+    _NM_CONNECTIONS_PATH = "etc/NetworkManager/system-connections"
     BIOS_GRUB_LOCATION = "/boot/grub2"
     UEFI_GRUB_LOCATION = "/boot/efi/EFI/redhat"
 
@@ -95,22 +116,33 @@ class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
         except Exception:
             return False
 
+    def _get_nmconnection_net_preserver(self):
+        return nmconnection.NmconnectionNetPreserver(self)
+
+    def _get_ifcfg_net_preserver(self):
+        return ifcfg.IfcfgNetPreserver(self)
+
+    def _get_ifcfg_nm_controlled(self):
+        if self._version_supported_util(self._version, minimum=8):
+            return "yes"
+        return "no"
+
     def _set_dhcp_net_config(self, ifcfgs_ethernet):
-        for ifcfg_file, ifcfg in ifcfgs_ethernet:
-            if ifcfg.get("BOOTPROTO") == "none":
-                ifcfg["BOOTPROTO"] = "dhcp"
-                ifcfg["UUID"] = str(uuid.uuid4())
+        for ifcfg_file, iface_cfg in ifcfgs_ethernet:
+            if iface_cfg.get("BOOTPROTO") == "none":
+                iface_cfg["BOOTPROTO"] = "dhcp"
+                iface_cfg["UUID"] = str(uuid.uuid4())
 
-                if 'IPADDR' in ifcfg:
-                    del ifcfg['IPADDR']
-                if 'GATEWAY' in ifcfg:
-                    del ifcfg['GATEWAY']
-                if 'NETMASK' in ifcfg:
-                    del ifcfg['NETMASK']
-                if 'NETWORK' in ifcfg:
-                    del ifcfg['NETWORK']
+                if 'IPADDR' in iface_cfg:
+                    del iface_cfg['IPADDR']
+                if 'GATEWAY' in iface_cfg:
+                    del iface_cfg['GATEWAY']
+                if 'NETMASK' in iface_cfg:
+                    del iface_cfg['NETMASK']
+                if 'NETWORK' in iface_cfg:
+                    del iface_cfg['NETWORK']
 
-                self._write_config_file(ifcfg_file, ifcfg)
+                self._write_config_file(ifcfg_file, iface_cfg)
 
         network_cfg_file = "etc/sysconfig/network"
         network_cfg = self._read_config_file(network_cfg_file,
@@ -119,10 +151,14 @@ class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
             del network_cfg["GATEWAY"]
             self._write_config_file(network_cfg_file, network_cfg)
 
+    def _uses_nmconnection_net_config(self):
+        return bool(
+            self._get_nmconnection_net_preserver().get_nmconnection_files())
+
     def _write_nic_configs(self, nics_info):
         for idx, _ in enumerate(nics_info):
             dev_name = "eth%d" % idx
-            cfg_path = "etc/sysconfig/network-scripts/ifcfg-%s" % dev_name
+            cfg_path = "%s/ifcfg-%s" % (self._NETWORK_SCRIPTS_PATH, dev_name)
             if self._test_path(cfg_path):
                 self._exec_cmd_chroot(
                     "cp %s %s.bak" % (cfg_path, cfg_path)
@@ -131,7 +167,26 @@ class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
                 cfg_path,
                 IFCFG_TEMPLATE % {
                     "device_name": dev_name,
+                    "nm_controlled": self._get_ifcfg_nm_controlled(),
                 })
+
+    def _write_nmconnection_configs(self, nics_info):
+        nm_net_preserver = self._get_nmconnection_net_preserver()
+        nm_net_preserver.backup_nmconnection_files()
+        device_names = ["eth%d" % idx for idx, _ in enumerate(nics_info)]
+        self._get_ifcfg_net_preserver().backup_ifcfg_configs(device_names)
+
+        for idx, _ in enumerate(nics_info):
+            dev_name = "eth%d" % idx
+            cfg_path = "%s/%s.nmconnection" % (
+                self._NM_CONNECTIONS_PATH, dev_name)
+            self._write_file_sudo(
+                cfg_path,
+                NMCONNECTION_TEMPLATE % {
+                    "device_name": dev_name,
+                    "connection_uuid": str(uuid.uuid4()),
+                })
+            self._exec_cmd_chroot("chmod 600 /%s" % cfg_path)
 
     def _comment_keys_from_ifcfg_files(
             self, keys, interfaces=None, backup_file_suffix=".bak"):
@@ -170,7 +225,10 @@ class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
     def set_net_config(self, nics_info, dhcp):
         if dhcp:
             self.disable_predictable_nic_names()
-            self._write_nic_configs(nics_info)
+            if self._uses_nmconnection_net_config():
+                self._write_nmconnection_configs(nics_info)
+            else:
+                self._write_nic_configs(nics_info)
             return
 
         LOG.info("Setting static IP configuration")

@@ -43,6 +43,17 @@ class IfcfgNetPreserver(base.BaseNetPreserver):
                     "ip_addresses": [ip_address] if ip_address else []
                 }
 
+    def backup_ifcfg_configs(self, device_names, backup_file_suffix=".bak"):
+        """Back up ifcfg profiles for the given device names."""
+        for dev_name in device_names:
+            cfg_path = "%s/ifcfg-%s" % (
+                self.network_scripts_path, dev_name)
+            if self.osmorphing_tool._test_path(cfg_path):
+                self.osmorphing_tool._exec_cmd_chroot(
+                    'mv "%s" "%s%s"' % (
+                        cfg_path, cfg_path, backup_file_suffix))
+                LOG.debug("Backed up ifcfg profile '%s'", cfg_path)
+
     def _get_net_config_files(self, network_scripts_path):
         dir_content = self.osmorphing_tool._list_dir(network_scripts_path)
         return [os.path.join(network_scripts_path, f) for f in

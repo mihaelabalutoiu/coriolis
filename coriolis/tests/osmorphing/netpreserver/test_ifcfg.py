@@ -160,3 +160,21 @@ class IfcfgNetPreserverTestCase(test_base.CoriolisBaseTestCase):
         }
 
         self.assertEqual(self.netpreserver.interface_info, expected_info)
+
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_exec_cmd_chroot')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
+    def test_backup_ifcfg_configs(self, mock_test_path, mock_exec_cmd_chroot):
+        mock_test_path.return_value = True
+
+        self.netpreserver.backup_ifcfg_configs(['eth0', 'eth1'])
+
+        mock_exec_cmd_chroot.assert_has_calls([
+            mock.call(
+                'mv "etc/sysconfig/network-scripts/ifcfg-eth0" '
+                '"etc/sysconfig/network-scripts/ifcfg-eth0.bak"'
+            ),
+            mock.call(
+                'mv "etc/sysconfig/network-scripts/ifcfg-eth1" '
+                '"etc/sysconfig/network-scripts/ifcfg-eth1.bak"'
+            ),
+        ])

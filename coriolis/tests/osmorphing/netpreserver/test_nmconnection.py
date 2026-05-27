@@ -31,7 +31,7 @@ class NmconnectionNetPreserverTestCase(test_base.CoriolisBaseTestCase):
         )
 
     @mock.patch.object(base.BaseLinuxOSMorphingTools, '_list_dir')
-    def test_get_nmconnection_files(self, mock_list_dir):
+    def test__get_nmconnection_files(self, mock_list_dir):
         mock_list_dir.return_value = [
             'eth0.nmconnection', 'eth1.nmconnection', 'other-file']
         result = self.netpreserver._get_nmconnection_files(
@@ -62,32 +62,39 @@ class NmconnectionNetPreserverTestCase(test_base.CoriolisBaseTestCase):
         self.assertEqual(result, [(mock.sentinel.nmconn_file,
                                    {"type": "ethernet"})])
 
-    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
-    @mock.patch.object(nmconnection.NmconnectionNetPreserver,
-                       '_get_nmconnection_files')
     @mock.patch.object(nmconnection.NmconnectionNetPreserver,
                        '_get_keyfiles_by_type')
-    def test_check_net_preserver_True(self, mock_get_keyfiles_by_type,
-                                      mock_get_nmconnection_files,
-                                      mock_test_path):
-        mock_test_path.return_value = True
-        mock_get_nmconnection_files.return_value = ["eth0.nmconnection",
-                                                    "eth1.nmconnection"]
+    @mock.patch.object(nmconnection.NmconnectionNetPreserver,
+                       'get_nmconnection_files')
+    def test_check_net_preserver_True(self, mock_get_nmconnection_files,
+                                      mock_get_keyfiles_by_type):
+        mock_get_nmconnection_files.return_value = [
+            'etc/NetworkManager/system-connections/eth0.nmconnection']
         mock_get_keyfiles_by_type.return_value = [
-            (mock.sentinel.nmconn_file, {"type": "ethernet",
-                                         "connection": {"id": "eth0"}})
-        ]
+            (mock.sentinel.nmconn_file, {"type": "ethernet"})]
 
         result = self.netpreserver.check_net_preserver()
 
         self.assertTrue(result)
 
-    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
     @mock.patch.object(nmconnection.NmconnectionNetPreserver,
-                       '_get_nmconnection_files')
-    def test_check_net_preserver_no_files(self, mock_get_nmconnection_files,
-                                          mock_test_path):
-        mock_test_path.return_value = True
+                       '_get_keyfiles_by_type')
+    @mock.patch.object(nmconnection.NmconnectionNetPreserver,
+                       'get_nmconnection_files')
+    def test_check_net_preserver_no_ethernet_files(
+            self, mock_get_nmconnection_files,
+            mock_get_keyfiles_by_type):
+        mock_get_nmconnection_files.return_value = [
+            'etc/NetworkManager/system-connections/vpn.nmconnection']
+        mock_get_keyfiles_by_type.return_value = []
+
+        result = self.netpreserver.check_net_preserver()
+
+        self.assertFalse(result)
+
+    @mock.patch.object(nmconnection.NmconnectionNetPreserver,
+                       'get_nmconnection_files')
+    def test_check_net_preserver_no_files(self, mock_get_nmconnection_files):
         mock_get_nmconnection_files.return_value = []
 
         result = self.netpreserver.check_net_preserver()
@@ -95,8 +102,110 @@ class NmconnectionNetPreserverTestCase(test_base.CoriolisBaseTestCase):
         self.assertFalse(result)
 
     @mock.patch.object(nmconnection.NmconnectionNetPreserver,
+                       '_get_nmconnection_files')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
+    def test_get_nmconnection_files(self, mock_test_path,
+                                    mock_get_nmconnection_files):
+        mock_test_path.return_value = True
+        mock_get_nmconnection_files.return_value = [
+            'etc/NetworkManager/system-connections/eth0.nmconnection']
+
+        result = self.netpreserver.get_nmconnection_files()
+
+        mock_get_nmconnection_files.assert_called_once_with(
+            self.netpreserver.nmconnection_file)
+        self.assertEqual(result, mock_get_nmconnection_files.return_value)
+
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
+    def test_get_nmconnection_files_no_dir(self, mock_test_path):
+        mock_test_path.return_value = False
+
+        result = self.netpreserver.get_nmconnection_files()
+
+        self.assertEqual(result, [])
+
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
+    @mock.patch.object(nmconnection.NmconnectionNetPreserver,
                        '_get_keyfiles_by_type')
-    def test_parse_network(self, mock_get_keyfiles_by_type):
+    def test_get_ethernet_keyfiles(self, mock_get_keyfiles_by_type,
+                                   mock_test_path):
+        mock_test_path.return_value = True
+        mock_get_keyfiles_by_type.return_value = [
+            (mock.sentinel.nmconn_file, {"type": "ethernet"})]
+
+        result = self.netpreserver.get_ethernet_keyfiles()
+
+        mock_get_keyfiles_by_type.assert_called_once_with(
+            "ethernet", self.netpreserver.nmconnection_file)
+        self.assertEqual(result, mock_get_keyfiles_by_type.return_value)
+
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
+    def test_get_ethernet_keyfiles_no_dir(self, mock_test_path):
+        mock_test_path.return_value = False
+
+        result = self.netpreserver.get_ethernet_keyfiles()
+
+        self.assertEqual(result, [])
+
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_exec_cmd_chroot')
+    @mock.patch.object(nmconnection.NmconnectionNetPreserver,
+                       'get_nmconnection_files')
+    def test_backup_nmconnection_files(self, mock_get_nmconnection_files,
+                                       mock_exec_cmd_chroot):
+        mock_get_nmconnection_files.return_value = [
+            'etc/NetworkManager/system-connections/ens192.nmconnection',
+            'etc/NetworkManager/system-connections/vpn.nmconnection',
+        ]
+
+        self.netpreserver.backup_nmconnection_files()
+
+        mock_exec_cmd_chroot.assert_has_calls([
+            mock.call(
+                'mv "etc/NetworkManager/system-connections/'
+                'ens192.nmconnection" '
+                '"etc/NetworkManager/system-connections/'
+                'ens192.nmconnection.bak"'
+            ),
+            mock.call(
+                'mv "etc/NetworkManager/system-connections/'
+                'vpn.nmconnection" '
+                '"etc/NetworkManager/system-connections/'
+                'vpn.nmconnection.bak"'
+            ),
+        ])
+
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_exec_cmd_chroot')
+    @mock.patch.object(nmconnection.NmconnectionNetPreserver,
+                       'get_ethernet_keyfiles')
+    def test_backup_ethernet_keyfiles(self, mock_get_ethernet_keyfiles,
+                                      mock_exec_cmd_chroot):
+        mock_get_ethernet_keyfiles.return_value = [
+            ('etc/NetworkManager/system-connections/ens192.nmconnection',
+             {'type': 'ethernet'}),
+            ('etc/NetworkManager/system-connections/eth0.nmconnection',
+             {'type': 'ethernet'}),
+        ]
+
+        self.netpreserver.backup_ethernet_keyfiles()
+
+        mock_exec_cmd_chroot.assert_has_calls([
+            mock.call(
+                'mv "etc/NetworkManager/system-connections/'
+                'ens192.nmconnection" '
+                '"etc/NetworkManager/system-connections/'
+                'ens192.nmconnection.bak"'
+            ),
+            mock.call(
+                'mv "etc/NetworkManager/system-connections/'
+                'eth0.nmconnection" '
+                '"etc/NetworkManager/system-connections/'
+                'eth0.nmconnection.bak"'
+            ),
+        ])
+
+    @mock.patch.object(nmconnection.NmconnectionNetPreserver,
+                       'get_ethernet_keyfiles')
+    def test_parse_network(self, mock_get_ethernet_keyfiles):
         nmconn_file_with_id = (
             self.netpreserver.nmconnection_file + "/eth0.nmconnection"
         )
@@ -137,7 +246,7 @@ class NmconnectionNetPreserverTestCase(test_base.CoriolisBaseTestCase):
             "id": "id_eth4",
             "address": "192.168.1.60/24",
         }
-        mock_get_keyfiles_by_type.return_value = [
+        mock_get_ethernet_keyfiles.return_value = [
             (nmconn_file_with_id, nmconn_with_id),
             (nmconn_file_without_id, nmconn_without_id),
             (nmconn_file_without_mac_address, nmconn_without_mac_address),
