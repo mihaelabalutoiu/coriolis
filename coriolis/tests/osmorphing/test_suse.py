@@ -6,6 +6,8 @@ from unittest import mock
 
 from coriolis import exception
 from coriolis.osmorphing import base
+from coriolis.osmorphing.netpreserver import ifcfg
+from coriolis.osmorphing.netpreserver import nmconnection
 from coriolis.osmorphing import suse
 from coriolis.tests import test_base
 
@@ -434,3 +436,210 @@ class BaseSUSEMorphingToolsTestCase(test_base.CoriolisBaseTestCase):
         mock_super_pre.assert_called_once_with([])
         mock_enable_sles_module.assert_not_called()
         mock_add_cloud_tools_repo.assert_not_called()
+
+    def test__get_nmconnection_net_preserver(self):
+        result = self.morphing_tools._get_nmconnection_net_preserver()
+
+        self.assertIsInstance(result, nmconnection.NmconnectionNetPreserver)
+
+    def test__get_ifcfg_net_preserver(self):
+        result = self.morphing_tools._get_ifcfg_net_preserver()
+
+        self.assertIsInstance(result, ifcfg.IfcfgNetPreserver)
+
+    def test__get_ifcfg_nm_controlled_old_version(self):
+        result = self.morphing_tools._get_ifcfg_nm_controlled()
+
+        self.assertEqual("no", result)
+
+    def test__get_ifcfg_nm_controlled_sles15(self):
+        self.morphing_tools._version = "15"
+
+        result = self.morphing_tools._get_ifcfg_nm_controlled()
+
+        self.assertEqual("yes", result)
+
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_write_file_sudo')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_exec_cmd_chroot')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
+    def test__write_nic_configs_with_existing_file(
+            self, mock_test_path, mock_exec_cmd_chroot, mock_write_file_sudo):
+        nics_info = [{'name': 'eth0'}, {'name': 'eth1'}]
+        mock_test_path.return_value = True
+
+        self.morphing_tools._write_nic_configs(nics_info)
+
+        mock_exec_cmd_chroot.assert_has_calls([
+            mock.call("cp etc/sysconfig/network-scripts/ifcfg-eth0 "
+                      "etc/sysconfig/network-scripts/ifcfg-eth0.bak"),
+            mock.call("cp etc/sysconfig/network-scripts/ifcfg-eth1 "
+                      "etc/sysconfig/network-scripts/ifcfg-eth1.bak"),
+        ])
+        mock_write_file_sudo.assert_has_calls([
+            mock.call(
+                "etc/sysconfig/network-scripts/ifcfg-eth0",
+                suse.IFCFG_TEMPLATE % {
+                    "device_name": "eth0",
+                    "nm_controlled": "no",
+                },
+            ),
+            mock.call(
+                "etc/sysconfig/network-scripts/ifcfg-eth1",
+                suse.IFCFG_TEMPLATE % {
+                    "device_name": "eth1",
+                    "nm_controlled": "no",
+                },
+            ),
+        ])
+
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_write_file_sudo')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_exec_cmd_chroot')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
+    def test__write_nic_configs_sles15_no_existing_file(
+            self, mock_test_path, mock_exec_cmd_chroot, mock_write_file_sudo):
+        self.morphing_tools._version = "15"
+        nics_info = [{'name': 'eth0'}]
+        mock_test_path.return_value = False
+
+        self.morphing_tools._write_nic_configs(nics_info)
+
+        mock_exec_cmd_chroot.assert_not_called()
+        mock_write_file_sudo.assert_called_once_with(
+            "etc/sysconfig/network-scripts/ifcfg-eth0",
+            suse.IFCFG_TEMPLATE % {
+                "device_name": "eth0",
+                "nm_controlled": "yes",
+            },
+        )
+
+    @mock.patch.object(
+        ifcfg.IfcfgNetPreserver, 'backup_ifcfg_configs'
+    )
+    @mock.patch.object(
+        nmconnection.NmconnectionNetPreserver, 'backup_nmconnection_files'
+    )
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, '_get_ifcfg_net_preserver'
+    )
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, '_get_nmconnection_net_preserver'
+    )
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_write_file_sudo')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_exec_cmd_chroot')
+    def test__write_nmconnection_configs(
+            self, mock_exec_cmd_chroot, mock_write_file_sudo,
+            mock_get_nmconnection_net_preserver,
+            mock_get_ifcfg_net_preserver,
+            mock_backup_nmconnection_files,
+            mock_backup_ifcfg_configs):
+        mock_nm_preserver = mock_get_nmconnection_net_preserver.return_value
+        mock_ifcfg_preserver = mock_get_ifcfg_net_preserver.return_value
+        nics_info = [{'name': 'eth0'}]
+
+        self.morphing_tools._write_nmconnection_configs(nics_info)
+
+        mock_nm_preserver.backup_nmconnection_files.assert_called_once_with()
+        mock_ifcfg_preserver.backup_ifcfg_configs.assert_called_once_with(
+            ['eth0'])
+        mock_write_file_sudo.assert_called_once()
+        args, _ = mock_write_file_sudo.call_args
+        self.assertEqual(
+            args[0],
+            "etc/NetworkManager/system-connections/eth0.nmconnection")
+        self.assertIn("[connection]", args[1])
+        self.assertIn("interface-name=eth0", args[1])
+        self.assertIn("method=auto", args[1])
+        self.assertIn("may-fail=false", args[1])
+        mock_exec_cmd_chroot.assert_called_once_with(
+            "chmod 600 /etc/NetworkManager/system-connections/"
+            "eth0.nmconnection")
+
+    @mock.patch.object(suse.BaseSUSEMorphingTools, '_write_nic_configs')
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, '_write_nmconnection_configs')
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, '_get_nmconnection_net_preserver')
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, 'disable_predictable_nic_names')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
+    def test__write_dhcp_net_config_no_nm_path(
+            self, mock_test_path, mock_disable_predictable_nic_names,
+            mock_get_nm_preserver, mock_write_nmconnection_configs,
+            mock_write_nic_configs):
+        mock_test_path.return_value = False
+        nics_info = [{'name': 'eth0'}]
+
+        self.morphing_tools._write_dhcp_net_config(nics_info)
+
+        mock_disable_predictable_nic_names.assert_called_once()
+        mock_test_path.assert_called_once_with(
+            "etc/NetworkManager/system-connections")
+        mock_get_nm_preserver.assert_not_called()
+        mock_write_nic_configs.assert_called_once_with(nics_info)
+        mock_write_nmconnection_configs.assert_not_called()
+
+    @mock.patch.object(suse.BaseSUSEMorphingTools, '_write_nic_configs')
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, '_write_nmconnection_configs')
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, '_get_nmconnection_net_preserver')
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, 'disable_predictable_nic_names')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
+    def test__write_dhcp_net_config_no_ethernet_keyfiles(
+            self, mock_test_path, mock_disable_predictable_nic_names,
+            mock_get_nm_preserver, mock_write_nmconnection_configs,
+            mock_write_nic_configs):
+        mock_test_path.return_value = True
+        mock_nm_preserver = mock_get_nm_preserver.return_value
+        mock_nm_preserver.get_ethernet_keyfiles.return_value = []
+        nics_info = [{'name': 'eth0'}]
+
+        self.morphing_tools._write_dhcp_net_config(nics_info)
+
+        mock_disable_predictable_nic_names.assert_called_once()
+        mock_nm_preserver.get_ethernet_keyfiles.assert_called_once_with()
+        mock_write_nic_configs.assert_called_once_with(nics_info)
+        mock_write_nmconnection_configs.assert_not_called()
+
+    @mock.patch.object(suse.BaseSUSEMorphingTools, '_write_nic_configs')
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, '_write_nmconnection_configs')
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, '_get_nmconnection_net_preserver')
+    @mock.patch.object(
+        suse.BaseSUSEMorphingTools, 'disable_predictable_nic_names')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path')
+    def test__write_dhcp_net_config_with_ethernet_keyfiles(
+            self, mock_test_path, mock_disable_predictable_nic_names,
+            mock_get_nm_preserver, mock_write_nmconnection_configs,
+            mock_write_nic_configs):
+        mock_test_path.return_value = True
+        mock_nm_preserver = mock_get_nm_preserver.return_value
+        mock_nm_preserver.get_ethernet_keyfiles.return_value = [
+            ('etc/NetworkManager/system-connections/eth0.nmconnection', {})]
+        nics_info = [{'name': 'eth0'}]
+
+        self.morphing_tools._write_dhcp_net_config(nics_info)
+
+        mock_disable_predictable_nic_names.assert_called_once()
+        mock_nm_preserver.get_ethernet_keyfiles.assert_called_once_with()
+        mock_write_nmconnection_configs.assert_called_once_with(nics_info)
+        mock_write_nic_configs.assert_not_called()
+
+    @mock.patch.object(suse.BaseSUSEMorphingTools, '_write_dhcp_net_config')
+    def test_set_net_config_dhcp(self, mock_write_dhcp_net_config):
+        nics_info = [{'name': 'eth0'}]
+
+        self.morphing_tools.set_net_config(nics_info, dhcp=True)
+
+        mock_write_dhcp_net_config.assert_called_once_with(nics_info)
+
+    @mock.patch.object(
+        base.BaseLinuxOSMorphingTools, '_setup_network_preservation')
+    def test_set_net_config_static(self, mock_setup_network_preservation):
+        nics_info = [{'name': 'eth0'}]
+
+        self.morphing_tools.set_net_config(nics_info, dhcp=False)
+
+        mock_setup_network_preservation.assert_called_once_with(nics_info)
