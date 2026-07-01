@@ -16,6 +16,11 @@ from coriolis import utils
 RED_HAT_DISTRO_IDENTIFIER = redhat_detect.RED_HAT_DISTRO_IDENTIFIER
 
 LOG = logging.getLogger(__name__)
+VIRTIO_DRIVERS = [
+    "virtio", "virtio_ring", "virtio_pci", "virtio_blk", "virtio_scsi",
+    "virtio_net", "virtio_console", "virtio_balloon",
+]
+VIRTIO_DRACUT_CONF_PATH = "etc/dracut.conf.d/99-coriolis-virtio.conf"
 
 # NOTE: some constants duplicated for backwards-compatibility:
 RELEASE_RHEL = RED_HAT_DISTRO_IDENTIFIER
@@ -84,6 +89,21 @@ class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
     def get_update_grub2_command(self):
         location = self._get_grub2_cfg_location()
         return "grub2-mkconfig -o %s" % location
+
+    def _disable_os_prober(self):
+        grub_default = "/etc/default/grub"
+        if not self._test_path_chroot(grub_default):
+            LOG.debug("'%s' not found; skipping os-prober disable.",
+                      grub_default)
+            return
+        self._exec_cmd_chroot(
+            "sed -i '/^GRUB_DISABLE_OS_PROBER=/d' %s" % grub_default)
+        self._exec_cmd_chroot(
+            "sh -c \"echo 'GRUB_DISABLE_OS_PROBER=true' >> %s\"" % grub_default)
+
+    def _execute_update_grub(self):
+        self._disable_os_prober()
+        super(BaseRedHatMorphingTools, self)._execute_update_grub()
 
     def _get_grub2_cfg_location(self):
         """Get GRUB2 config location for Red Hat-based distros.
@@ -347,7 +367,15 @@ class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
         self._yum_uninstall(package_names)
 
     def _run_dracut(self):
-        self._exec_cmd_chroot("dracut --regenerate-all -f")
+        self._exec_cmd_chroot("mkdir -p /etc/dracut.conf.d")
+        conf_lines = [
+            'hostonly="yes"',
+            'hostonly_cmdline="yes"',
+            'add_drivers+=" %s "' % " ".join(VIRTIO_DRIVERS),
+        ]
+        conf_content = "\n".join(conf_lines) + "\n"
+        self._write_file_sudo(VIRTIO_DRACUT_CONF_PATH, conf_content)
+        self._exec_cmd_chroot("dracut -f --regenerate-all")
 
     def _set_network_nozeroconf_config(self):
         network_cfg_file = "etc/sysconfig/network"

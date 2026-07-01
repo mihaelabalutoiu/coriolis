@@ -718,12 +718,57 @@ class BaseRedHatMorphingToolsTestCase(test_base.CoriolisBaseTestCase):
 
         mock_yum_uninstall.assert_called_once_with(self.package_names)
 
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_write_file_sudo')
     @mock.patch.object(base.BaseLinuxOSMorphingTools, '_exec_cmd_chroot')
-    def test__run_dracut(self, mock_exec_cmd_chroot):
+    def test__run_dracut(self, mock_exec_cmd_chroot, mock_write_file_sudo):
         self.morphing_tools._run_dracut()
 
-        mock_exec_cmd_chroot.assert_called_once_with(
-            "dracut --regenerate-all -f")
+        expected_conf = "\n".join([
+            'hostonly="yes"',
+            'hostonly_cmdline="yes"',
+            'add_drivers+=" %s "' % " ".join(redhat.VIRTIO_DRIVERS),
+        ]) + "\n"
+        mock_write_file_sudo.assert_called_once_with(
+            redhat.VIRTIO_DRACUT_CONF_PATH, expected_conf)
+        mock_exec_cmd_chroot.assert_has_calls([
+            mock.call("mkdir -p /etc/dracut.conf.d"),
+            mock.call("dracut -f --regenerate-all"),
+        ])
+
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_exec_cmd_chroot')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path_chroot')
+    def test__disable_os_prober(
+            self, mock_test_path_chroot, mock_exec_cmd_chroot):
+        mock_test_path_chroot.return_value = True
+
+        self.morphing_tools._disable_os_prober()
+
+        mock_exec_cmd_chroot.assert_has_calls([
+            mock.call(
+                "sed -i '/^GRUB_DISABLE_OS_PROBER=/d' /etc/default/grub"),
+            mock.call(
+                "sh -c \"echo 'GRUB_DISABLE_OS_PROBER=true' >> "
+                "/etc/default/grub\""),
+        ])
+
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_exec_cmd_chroot')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_test_path_chroot')
+    def test__disable_os_prober_no_grub_default(
+            self, mock_test_path_chroot, mock_exec_cmd_chroot):
+        mock_test_path_chroot.return_value = False
+
+        self.morphing_tools._disable_os_prober()
+
+        mock_exec_cmd_chroot.assert_not_called()
+
+    @mock.patch.object(redhat.BaseRedHatMorphingTools, '_disable_os_prober')
+    @mock.patch.object(base.BaseLinuxOSMorphingTools, '_execute_update_grub')
+    def test__execute_update_grub(
+            self, mock_super_execute, mock_disable_os_prober):
+        self.morphing_tools._execute_update_grub()
+
+        mock_disable_os_prober.assert_called_once()
+        mock_super_execute.assert_called_once()
 
     @mock.patch.object(redhat.BaseRedHatMorphingTools, '_write_config_file')
     @mock.patch.object(base.BaseLinuxOSMorphingTools, '_read_config_file')
