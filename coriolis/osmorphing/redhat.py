@@ -7,6 +7,7 @@ import uuid
 
 from oslo_log import log as logging
 
+from coriolis import constants
 from coriolis import exception
 from coriolis.osmorphing import base
 from coriolis.osmorphing.osdetect import centos as centos_detect
@@ -85,6 +86,10 @@ class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
         location = self._get_grub2_cfg_location()
         return "grub2-mkconfig -o %s" % location
 
+    def _get_firmware_type(self):
+        return self._osmorphing_parameters.get(
+            "firmware_type", constants.FIRMWARE_TYPE_BIOS)
+
     def _get_grub2_cfg_location(self):
         """Get GRUB2 config location for Red Hat-based distros.
 
@@ -97,6 +102,16 @@ class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
         bios_cfg = os.path.join(self.BIOS_GRUB_LOCATION, "grub.cfg")
         # Prefer /boot/grub2/grub.cfg - on RHEL 9.4+ UEFI, the EFI file is a
         # wrapper and grub2-mkconfig must write to /boot/grub2/grub.cfg
+
+        firmware_type = self._get_firmware_type()
+
+        if firmware_type == constants.FIRMWARE_TYPE_BIOS:
+            if self._test_path_chroot(bios_cfg):
+                return bios_cfg
+            raise Exception(
+                "could not determine BIOS grub location. "
+                "boot partition not mounted?")
+
         if self._test_path_chroot(bios_cfg):
             return bios_cfg
         if self._test_path_chroot(uefi_cfg):
@@ -104,6 +119,23 @@ class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
         raise Exception(
             "could not determine grub location."
             " boot partition not mounted?")
+
+    def _ensure_bios_grub2_boot_commands(self):
+        """Grub2-mkconfig may emit UEFI 'linuxefi'/'initrdefi' directives into
+        the BIOS grub.cfg (e.g. from a leftover /boot/efi/EFI/redhat), which
+        BIOS GRUB cannot run. Rewrite them to 'linux16'/'initrd16'.
+        """
+        if self._get_firmware_type() != constants.FIRMWARE_TYPE_BIOS:
+            return
+        # Checked directly rather than through _get_grub2_cfg_location() so
+        # grub-legacy systems without a grub2 config (e.g. RHEL 6) are simply
+        # skipped instead of raising.
+        location = os.path.join(self.BIOS_GRUB_LOCATION, "grub.cfg")
+        if not self._test_path_chroot(location):
+            return
+        self._exec_cmd_chroot(
+            "sed -i -e 's/\\blinuxefi\\b/linux16/g'"
+            " -e 's/\\binitrdefi\\b/initrd16/g' %s" % location)
 
     def _has_systemd(self):
         try:
@@ -337,6 +369,9 @@ class BaseRedHatMorphingTools(base.BaseLinuxOSMorphingTools):
         self._run_dracut()
         super(BaseRedHatMorphingTools, self).post_packages_install(
             package_names)
+        # Runs last so it sanitizes both a freshly regenerated grub.cfg and
+        # one that already carried UEFI-only directives from the source disk.
+        self._ensure_bios_grub2_boot_commands()
 
     def install_packages(self, package_names):
         repos_to_enable = self._get_repos_to_enable()
